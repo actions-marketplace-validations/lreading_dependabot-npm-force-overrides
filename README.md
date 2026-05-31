@@ -4,7 +4,10 @@ Updates npm Dependabot PRs that only move transitive dependencies in `package-lo
 
 This is for **npm only**.
 
-Available on the [GitHub Marketplace](https://github.com/marketplace/actions/dependabot-npm-force-overrides).
+<!--
+  TODO: Wait to see if this does show up on the marketplace, it should but there may be a delay
+  Available on the [GitHub Marketplace](https://github.com/marketplace/actions/dependabot-npm-force-overrides).
+-->
 
 You can see an example of the intended workflow [here](https://github.com/lreading/test-dependabot-npm-force-overrides/pull/1).
 
