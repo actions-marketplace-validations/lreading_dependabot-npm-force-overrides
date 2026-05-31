@@ -145,7 +145,12 @@ describe('executeCommitMode', () => {
       JSON.stringify({
         pull_request: {
           user: { login: 'dependabot[bot]' },
-          head: { ref: 'dependabot/npm_and_yarn/semver-7.8.1' },
+          head: {
+            ref: 'dependabot/npm_and_yarn/semver-7.8.1',
+            repo: {
+              full_name: 'lreading/test-dependabot-npm-force-overrides',
+            },
+          },
           labels: [],
         },
       }),
@@ -209,7 +214,12 @@ describe('executeCommitMode', () => {
           });
         }
 
-        if (args[0] === 'add' || args.includes('commit') || args[0] === 'push') {
+        if (
+          args[0] === 'add' ||
+          args.includes('commit') ||
+          args[0] === 'remote' ||
+          args[0] === 'push'
+        ) {
           return Promise.resolve({ stdout: '', stderr: '' });
         }
 
@@ -218,7 +228,7 @@ describe('executeCommitMode', () => {
     };
 
     const result = await executeCommitMode({
-      config: createDefaultConfig(),
+      config: { ...createDefaultConfig(), githubToken: 'token-value' },
       cwd: project,
       env: {
         GITHUB_ACTOR: 'dependabot[bot]',
@@ -241,6 +251,9 @@ describe('executeCommitMode', () => {
     );
     expect(lockfileRefreshed).toBe(true);
     expect(commands).toContain('git add package.json package-lock.json');
+    expect(commands).toContain(
+      'git remote set-url origin https://x-access-token:token-value@github.com/lreading/test-dependabot-npm-force-overrides.git',
+    );
     expect(commands).toContain('git push origin HEAD:dependabot/npm_and_yarn/semver-7.8.1');
   });
 
