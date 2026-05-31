@@ -4,6 +4,8 @@ Updates npm Dependabot PRs that only move transitive dependencies in `package-lo
 
 This is for **npm only**.
 
+Available on the [GitHub Marketplace](https://github.com/marketplace/actions/dependabot-npm-force-overrides).
+
 You can see an example of the intended workflow [here](https://github.com/lreading/test-dependabot-npm-force-overrides/pull/1).
 
 ## Quickstart
@@ -28,12 +30,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
-      - uses: lreading/dependabot-npm-force-overrides@8181327f59b1946543fec22578c527aeb322129e # v0.0.0
+      - uses: lreading/dependabot-npm-force-overrides@9565f45fa8f140a7d52ce1c34af0c71adfec0ee2 # v1.0.0
         with:
           github-token: ${{ github.token }}
 ```
 
-_You can use a moving major tag like `@v1` after v1 exists, but a commit SHA is more secure._
+_You can use `@v1`, but pinning a commit SHA is more secure._
 
 ## Configuration
 
