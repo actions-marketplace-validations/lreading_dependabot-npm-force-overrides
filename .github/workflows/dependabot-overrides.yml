@@ -18,7 +18,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
-      - uses: lreading/dependabot-npm-force-overrides@v0.0.0
+      - uses: lreading/dependabot-npm-force-overrides@8181327f59b1946543fec22578c527aeb322129e
         id: overrides
         with:
           github-token: ${{ github.token }}

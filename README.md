@@ -26,7 +26,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
-      - uses: lreading/dependabot-npm-force-overrides@1a9c1f1be425cc5f3586a8eba5784603a2243193 # v0.0.0
+      - uses: lreading/dependabot-npm-force-overrides@8181327f59b1946543fec22578c527aeb322129e # v0 preview
         with:
           github-token: ${{ github.token }}
 ```
