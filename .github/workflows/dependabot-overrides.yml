@@ -21,10 +21,5 @@ jobs:
       - uses: lreading/dependabot-npm-force-overrides@v0.0.0
         id: overrides
         with:
-          mode: commit
+          github-token: ${{ github.token }}
           package-roots: .
-          fail-on-direct-lockfile-only: 'false'
-
-      - name: Push override commit
-        if: steps.overrides.outputs.committed == 'true'
-        run: git push origin HEAD:${{ github.event.pull_request.head.ref }}

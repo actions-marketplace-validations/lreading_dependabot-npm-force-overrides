@@ -45,6 +45,7 @@ export type CommitModeOptions = {
 export type CommitModeOutcome = {
   readonly changed: boolean;
   readonly committed: boolean;
+  readonly pushed: boolean;
   readonly packageRoots: readonly string[];
   readonly message: string;
 };
@@ -53,6 +54,7 @@ export type PullRequestContext = {
   readonly actor: string;
   readonly author: string;
   readonly headRef: string;
+  readonly repository?: string;
   readonly labels: readonly string[];
 };
 
@@ -63,6 +65,9 @@ type PullRequestEvent = {
     };
     readonly head?: {
       readonly ref?: string;
+      readonly repo?: {
+        readonly full_name?: string;
+      };
     };
     readonly labels?: readonly {
       readonly name?: string;
@@ -79,12 +84,12 @@ export async function executeCommitMode(
   const logger = options.logger ?? { info: () => undefined };
   const context = await readPullRequestContext(env);
   if (!context.ok) {
-    return context;
+    return noOp([], context.reason);
   }
 
   const allowed = validateCommitMutationAllowed(options.config, context.value);
   if (!allowed.ok) {
-    return allowed;
+    return noOp([], allowed.reason);
   }
 
   const clean = await requireCleanWorkingTree(runner, cwd);
@@ -106,7 +111,7 @@ export async function executeCommitMode(
       splitLines(changedPaths.stdout),
     );
     if (!detectedPackageRoots.ok) {
-      return detectedPackageRoots;
+      return noOp([], detectedPackageRoots.reason);
     }
     packageRoots = detectedPackageRoots.value;
   }
@@ -132,33 +137,33 @@ export async function executeCommitMode(
       return analysis;
     }
 
-    const directLockfileOnly = analysis.value.decisions.some(
-      (decision) => decision.directDependencyField !== undefined,
-    );
-    if (directLockfileOnly && options.config.failOnDirectLockfileOnly) {
-      return fail('Direct dependency lockfile-only updates are not eligible for overrides.');
-    }
-
     if (!analysis.value.changed) {
       continue;
     }
 
-    await writeFile(
-      path.join(cwd, joinRepoPath(packageRoot, 'package.json')),
-      `${JSON.stringify(analysis.value.packageJson, null, 2)}\n`,
-      'utf8',
-    );
     rootsToRefresh.push(packageRoot);
+    if (!options.config.dryRun) {
+      await writeFile(
+        path.join(cwd, joinRepoPath(packageRoot, 'package.json')),
+        `${JSON.stringify(analysis.value.packageJson, null, 2)}\n`,
+        'utf8',
+      );
+    }
   }
 
   if (rootsToRefresh.length === 0) {
+    return noOp(packageRoots, 'No override changes were needed.');
+  }
+
+  if (options.config.dryRun) {
     return {
       ok: true,
       value: {
-        changed: false,
+        changed: true,
         committed: false,
+        pushed: false,
         packageRoots,
-        message: 'No override changes were needed.',
+        message: 'Override changes would be committed.',
       },
     };
   }
@@ -183,6 +188,7 @@ export async function executeCommitMode(
       value: {
         changed: false,
         committed: false,
+        pushed: false,
         packageRoots,
         message: 'No staged changes remained after lockfile refresh.',
       },
@@ -198,14 +204,16 @@ export async function executeCommitMode(
     '-m',
     'Apply npm overrides for Dependabot transitive updates',
   ]);
+  await pushCommit(runner, cwd, options.config, context.value, env);
 
   return {
     ok: true,
     value: {
       changed: true,
       committed: true,
+      pushed: true,
       packageRoots,
-      message: 'Committed npm override updates.',
+      message: 'Committed and pushed npm override updates.',
     },
   };
 }
@@ -231,12 +239,12 @@ export function validateCommitMutationAllowed(
     return fail(`PR has skip label "${config.skipLabel}".`);
   }
 
-  if (!config.allowedBotLogins.includes(context.actor)) {
-    return fail(`Actor ${context.actor} is not allowed to mutate PR branches.`);
+  if (context.actor !== 'dependabot[bot]') {
+    return fail(`Actor ${context.actor} is not Dependabot.`);
   }
 
-  if (!config.allowedBotLogins.includes(context.author)) {
-    return fail(`PR author ${context.author} is not allowed for mutation.`);
+  if (context.author !== 'dependabot[bot]') {
+    return fail(`PR author ${context.author} is not Dependabot.`);
   }
 
   if (!context.headRef.startsWith('dependabot/')) {
@@ -280,6 +288,7 @@ async function readPullRequestContext(env: NodeJS.ProcessEnv): Promise<Result<Pu
 
   const author = parsed.pull_request.user?.login;
   const headRef = parsed.pull_request.head?.ref;
+  const repository = parsed.pull_request.head?.repo?.full_name ?? env.GITHUB_REPOSITORY;
   if (author === undefined || headRef === undefined) {
     return fail('Pull request event payload is missing author or head ref.');
   }
@@ -290,12 +299,33 @@ async function readPullRequestContext(env: NodeJS.ProcessEnv): Promise<Result<Pu
       actor,
       author,
       headRef,
+      ...(repository === undefined ? {} : { repository }),
       labels:
         parsed.pull_request.labels
           ?.map((label) => label.name)
           .filter((labelName): labelName is string => labelName !== undefined) ?? [],
     },
   };
+}
+
+async function pushCommit(
+  runner: CommandRunner,
+  cwd: string,
+  config: ActionConfig,
+  context: PullRequestContext,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const repository = context.repository ?? env.GITHUB_REPOSITORY;
+  if (repository !== undefined && config.githubToken !== '') {
+    await git(runner, cwd, [
+      'remote',
+      'set-url',
+      'origin',
+      `https://x-access-token:${config.githubToken}@github.com/${repository}.git`,
+    ]);
+  }
+
+  await git(runner, cwd, ['push', 'origin', `HEAD:${context.headRef}`]);
 }
 
 async function requireCleanWorkingTree(
@@ -409,5 +439,18 @@ function fail(reason: string): Result<never> {
   return {
     ok: false,
     reason,
+  };
+}
+
+function noOp(packageRoots: readonly string[], message: string): Result<CommitModeOutcome> {
+  return {
+    ok: true,
+    value: {
+      changed: false,
+      committed: false,
+      pushed: false,
+      packageRoots,
+      message,
+    },
   };
 }

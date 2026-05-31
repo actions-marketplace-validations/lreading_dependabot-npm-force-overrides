@@ -209,7 +209,7 @@ describe('executeCommitMode', () => {
           });
         }
 
-        if (args[0] === 'add' || args.includes('commit')) {
+        if (args[0] === 'add' || args.includes('commit') || args[0] === 'push') {
           return Promise.resolve({ stdout: '', stderr: '' });
         }
 
@@ -232,6 +232,7 @@ describe('executeCommitMode', () => {
       expect(result.value).toMatchObject({
         changed: true,
         committed: true,
+        pushed: true,
         packageRoots: ['.'],
       });
     }
@@ -240,6 +241,7 @@ describe('executeCommitMode', () => {
     );
     expect(lockfileRefreshed).toBe(true);
     expect(commands).toContain('git add package.json package-lock.json');
+    expect(commands).toContain('git push origin HEAD:dependabot/npm_and_yarn/semver-7.8.1');
   });
 
   it('handles a nested package root without touching root package files', async () => {
@@ -281,6 +283,7 @@ describe('executeCommitMode', () => {
     if (result.ok) {
       expect(result.value.packageRoots).toEqual(['packages/app']);
       expect(result.value.committed).toBe(true);
+      expect(result.value.pushed).toBe(true);
     }
     await expect(readFile(path.join(packageRoot, 'package.json'), 'utf8')).resolves.toContain(
       '"semver": ">=7.8.1"',
@@ -344,7 +347,7 @@ function createNestedRunner(
         });
       }
 
-      if (args[0] === 'add' || args.includes('commit')) {
+      if (args[0] === 'add' || args.includes('commit') || args[0] === 'push') {
         return Promise.resolve({ stdout: '', stderr: '' });
       }
 

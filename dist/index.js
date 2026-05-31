@@ -23410,11 +23410,11 @@ async function executeCommitMode(options) {
   const logger = options.logger ?? { info: () => void 0 };
   const context = await readPullRequestContext(env);
   if (!context.ok) {
-    return context;
+    return noOp([], context.reason);
   }
   const allowed = validateCommitMutationAllowed(options.config, context.value);
   if (!allowed.ok) {
-    return allowed;
+    return noOp([], allowed.reason);
   }
   const clean = await requireCleanWorkingTree(runner, cwd);
   if (!clean.ok) {
@@ -23433,7 +23433,7 @@ async function executeCommitMode(options) {
       splitLines(changedPaths.stdout)
     );
     if (!detectedPackageRoots.ok) {
-      return detectedPackageRoots;
+      return noOp([], detectedPackageRoots.reason);
     }
     packageRoots = detectedPackageRoots.value;
   }
@@ -23455,31 +23455,31 @@ async function executeCommitMode(options) {
     if (!analysis.ok) {
       return analysis;
     }
-    const directLockfileOnly = analysis.value.decisions.some(
-      (decision) => decision.directDependencyField !== void 0
-    );
-    if (directLockfileOnly && options.config.failOnDirectLockfileOnly) {
-      return fail4("Direct dependency lockfile-only updates are not eligible for overrides.");
-    }
     if (!analysis.value.changed) {
       continue;
     }
-    await (0, import_promises.writeFile)(
-      path7.join(cwd, joinRepoPath(packageRoot, "package.json")),
-      `${JSON.stringify(analysis.value.packageJson, null, 2)}
-`,
-      "utf8"
-    );
     rootsToRefresh.push(packageRoot);
+    if (!options.config.dryRun) {
+      await (0, import_promises.writeFile)(
+        path7.join(cwd, joinRepoPath(packageRoot, "package.json")),
+        `${JSON.stringify(analysis.value.packageJson, null, 2)}
+`,
+        "utf8"
+      );
+    }
   }
   if (rootsToRefresh.length === 0) {
+    return noOp(packageRoots, "No override changes were needed.");
+  }
+  if (options.config.dryRun) {
     return {
       ok: true,
       value: {
-        changed: false,
+        changed: true,
         committed: false,
+        pushed: false,
         packageRoots,
-        message: "No override changes were needed."
+        message: "Override changes would be committed."
       }
     };
   }
@@ -23501,6 +23501,7 @@ async function executeCommitMode(options) {
       value: {
         changed: false,
         committed: false,
+        pushed: false,
         packageRoots,
         message: "No staged changes remained after lockfile refresh."
       }
@@ -23515,13 +23516,15 @@ async function executeCommitMode(options) {
     "-m",
     "Apply npm overrides for Dependabot transitive updates"
   ]);
+  await pushCommit(runner, cwd, options.config, context.value, env);
   return {
     ok: true,
     value: {
       changed: true,
       committed: true,
+      pushed: true,
       packageRoots,
-      message: "Committed npm override updates."
+      message: "Committed and pushed npm override updates."
     }
   };
 }
@@ -23538,11 +23541,11 @@ function validateCommitMutationAllowed(config, context) {
   if (config.skipLabel !== void 0 && context.labels.includes(config.skipLabel)) {
     return fail4(`PR has skip label "${config.skipLabel}".`);
   }
-  if (!config.allowedBotLogins.includes(context.actor)) {
-    return fail4(`Actor ${context.actor} is not allowed to mutate PR branches.`);
+  if (context.actor !== "dependabot[bot]") {
+    return fail4(`Actor ${context.actor} is not Dependabot.`);
   }
-  if (!config.allowedBotLogins.includes(context.author)) {
-    return fail4(`PR author ${context.author} is not allowed for mutation.`);
+  if (context.author !== "dependabot[bot]") {
+    return fail4(`PR author ${context.author} is not Dependabot.`);
   }
   if (!context.headRef.startsWith("dependabot/")) {
     return fail4(`PR branch ${context.headRef} is not a Dependabot branch.`);
@@ -23578,6 +23581,7 @@ async function readPullRequestContext(env) {
   }
   const author = parsed.pull_request.user?.login;
   const headRef = parsed.pull_request.head?.ref;
+  const repository = parsed.pull_request.head?.repo?.full_name ?? env.GITHUB_REPOSITORY;
   if (author === void 0 || headRef === void 0) {
     return fail4("Pull request event payload is missing author or head ref.");
   }
@@ -23587,9 +23591,22 @@ async function readPullRequestContext(env) {
       actor,
       author,
       headRef,
+      ...repository === void 0 ? {} : { repository },
       labels: parsed.pull_request.labels?.map((label) => label.name).filter((labelName) => labelName !== void 0) ?? []
     }
   };
+}
+async function pushCommit(runner, cwd, config, context, env) {
+  const repository = context.repository ?? env.GITHUB_REPOSITORY;
+  if (repository !== void 0 && config.githubToken !== "") {
+    await git(runner, cwd, [
+      "remote",
+      "set-url",
+      "origin",
+      `https://x-access-token:${config.githubToken}@github.com/${repository}.git`
+    ]);
+  }
+  await git(runner, cwd, ["push", "origin", `HEAD:${context.headRef}`]);
 }
 async function requireCleanWorkingTree(runner, cwd) {
   const status = await git(runner, cwd, ["status", "--porcelain"]);
@@ -23663,87 +23680,37 @@ function fail4(reason) {
     reason
   };
 }
+function noOp(packageRoots, message) {
+  return {
+    ok: true,
+    value: {
+      changed: false,
+      committed: false,
+      pushed: false,
+      packageRoots,
+      message
+    }
+  };
+}
 
 // src/config.ts
 function createDefaultConfig() {
   return {
     githubToken: "",
-    mode: "check",
     dryRun: false,
-    packageRoots: [],
-    allowedBotLogins: ["dependabot[bot]"],
-    overrideStrategy: "minimum",
-    securityOnly: false,
-    failOnDirectLockfileOnly: true
+    packageRoots: []
   };
 }
 function parseActionConfig(inputs) {
   const defaults = createDefaultConfig();
   const githubTokenInput = readOptionalInput(inputs, "github-token");
-  const allowedBotLogins = parseListInput(readOptionalInput(inputs, "allowed-bot-logins"));
-  const mode = parseMode(withDefault(readOptionalInput(inputs, "mode"), defaults.mode));
-  const overrideStrategy = parseOverrideStrategy(
-    withDefault(readOptionalInput(inputs, "override-strategy"), defaults.overrideStrategy)
-  );
+  const githubToken = githubTokenInput === "" ? process.env.GITHUB_TOKEN ?? "" : githubTokenInput;
   const skipLabel = readOptionalInput(inputs, "skip-label");
   return {
-    githubToken: withDefault(githubTokenInput, process.env.GITHUB_TOKEN ?? ""),
-    mode,
+    githubToken,
     dryRun: readBooleanInput(inputs, "dry-run", defaults.dryRun),
     packageRoots: parseListInput(readOptionalInput(inputs, "package-roots")) ?? [],
-    allowedBotLogins: allowedBotLogins ?? defaults.allowedBotLogins,
-    overrideStrategy,
-    securityOnly: readBooleanInput(inputs, "security-only", defaults.securityOnly),
-    failOnDirectLockfileOnly: readBooleanInput(
-      inputs,
-      "fail-on-direct-lockfile-only",
-      defaults.failOnDirectLockfileOnly
-    ),
     ...skipLabel === "" ? {} : { skipLabel }
-  };
-}
-function createModePlan(config) {
-  if (config.dryRun) {
-    return {
-      mode: config.mode,
-      dryRun: true,
-      mayWriteFiles: false,
-      mayComment: false,
-      mayCommit: false,
-      shouldFailOnChanges: false,
-      summary: `dry-run ${config.mode} mode: report only`
-    };
-  }
-  if (config.mode === "check") {
-    return {
-      mode: config.mode,
-      dryRun: false,
-      mayWriteFiles: false,
-      mayComment: false,
-      mayCommit: false,
-      shouldFailOnChanges: true,
-      summary: "check mode: report required changes and fail when changes are needed"
-    };
-  }
-  if (config.mode === "comment") {
-    return {
-      mode: config.mode,
-      dryRun: false,
-      mayWriteFiles: false,
-      mayComment: true,
-      mayCommit: false,
-      shouldFailOnChanges: false,
-      summary: "comment mode: report required changes as a PR comment"
-    };
-  }
-  return {
-    mode: config.mode,
-    dryRun: false,
-    mayWriteFiles: true,
-    mayComment: false,
-    mayCommit: true,
-    shouldFailOnChanges: false,
-    summary: "commit mode: write fixes and commit them to the PR branch"
   };
 }
 function readOptionalInput(inputs, name) {
@@ -23756,18 +23723,6 @@ function readBooleanInput(inputs, name, defaultValue) {
   }
   return inputs.getBooleanInput(name);
 }
-function parseMode(value) {
-  if (value === "check" || value === "comment" || value === "commit") {
-    return value;
-  }
-  throw new Error(`Invalid mode "${value}". Expected one of: check, comment, commit.`);
-}
-function parseOverrideStrategy(value) {
-  if (value === "minimum") {
-    return value;
-  }
-  throw new Error(`Invalid override-strategy "${value}". Only "minimum" is supported.`);
-}
 function parseListInput(value) {
   if (value.trim() === "") {
     return void 0;
@@ -23775,46 +23730,32 @@ function parseListInput(value) {
   const entries = value.split(/[\n,]/).map((entry) => entry.trim()).filter((entry) => entry !== "");
   return entries.length === 0 ? void 0 : entries;
 }
-function withDefault(value, defaultValue) {
-  return value === "" ? defaultValue : value;
-}
 
 // src/index.ts
 async function run() {
   const config = parseActionConfig(core_exports);
-  const modePlan = createModePlan(config);
-  info(`Mode: ${modePlan.mode}`);
-  info(`Dry run: ${String(modePlan.dryRun)}`);
-  info(`Override strategy: ${config.overrideStrategy}`);
-  info(`Security only: ${String(config.securityOnly)}`);
-  info(`Fail on direct lockfile-only updates: ${String(config.failOnDirectLockfileOnly)}`);
-  info(`Allowed bot logins: ${config.allowedBotLogins.join(", ")}`);
+  info(`Dry run: ${String(config.dryRun)}`);
   info(
     config.packageRoots.length === 0 ? "Package roots: auto-detect" : `Package roots: ${config.packageRoots.join(", ")}`
   );
   if (config.skipLabel !== void 0) {
     info(`Skip label: ${config.skipLabel}`);
   }
-  info(modePlan.summary);
   setOutput("changed", "false");
-  setOutput("mode", modePlan.mode);
-  setOutput("dry-run", String(modePlan.dryRun));
-  setOutput("would-write", String(modePlan.mayWriteFiles));
-  setOutput("would-comment", String(modePlan.mayComment));
-  setOutput("would-commit", String(modePlan.mayCommit));
-  if (modePlan.mayCommit) {
-    const outcome = await executeCommitMode({
-      config,
-      logger: core_exports
-    });
-    if (!outcome.ok) {
-      setFailed(outcome.reason);
-      return;
-    }
-    info(outcome.value.message);
-    setOutput("changed", String(outcome.value.changed));
-    setOutput("committed", String(outcome.value.committed));
+  setOutput("committed", "false");
+  setOutput("pushed", "false");
+  const outcome = await executeCommitMode({
+    config,
+    logger: core_exports
+  });
+  if (!outcome.ok) {
+    setFailed(outcome.reason);
+    return;
   }
+  info(outcome.value.message);
+  setOutput("changed", String(outcome.value.changed));
+  setOutput("committed", String(outcome.value.committed));
+  setOutput("pushed", String(outcome.value.pushed));
 }
 run().catch((error2) => {
   const message = error2 instanceof Error ? error2.message : String(error2);
